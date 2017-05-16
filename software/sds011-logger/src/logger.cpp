@@ -9,8 +9,20 @@
 
 #include "sds011/SDS011.h"
 
+#include "ds1307/RTClib.h"
+
 SdCard card;
 Fat16 fs;
+
+float p10,p25;
+int error;
+
+SDS011 my_sds;
+
+RTC_DS1307 rtc;
+
+char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
 
 /*
  * Attempts to initialize an SD card with a FAT16 FS, and create a new file to write data to.
@@ -60,45 +72,80 @@ bool initCard(SdCard *sd, Fat16 *file)
   return false;
 }
 
+uint32_t prevSyncTime = millis();
+#define SYNC_INT 60000 // write data to card every minute
+
+/*
+ * Flushes data in the SD card's RAM buffer to the flash memory
+ */
+void syncData(Fat16 *file)
+{
+  if (millis() > prevSyncTime + SYNC_INT)
+  {
+      prevSyncTime = millis();
+      if (!file->sync())
+      {
+        Serial.println(F("Error logging to SD card."));
+      }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial);
 
-  Serial.println("starting logger");
+  Serial.println("Starting logger...");
 
-  // configure pins of card detection and write protection
-  pinMode(SD_DETECT_PIN, INPUT);
-  pinMode(SD_WP_PIN, INPUT);
   pinMode(SD_SS_PIN, OUTPUT);
 
-  bool cardInstalled = !digitalRead(SD_DETECT_PIN);
-  bool cardProtected = digitalRead(SD_WP_PIN);
-
-  // check if a card is present
-  if (cardInstalled)
-  {
-    // check if the card is read only
-    if (!cardProtected)
-    {
       if (!initCard(&card, &fs)) {
-        Serial.println("card init failed");
+        Serial.println("ERROR: card couldn't be initialized. Wrong file system?");
+        while (1);
       } else {
-        Serial.println("card init succeeded");
+        Serial.println("SD card initialized and ready to accept data.");
       }
-    } else {
-      Serial.println("ERROR: card is read only! Flip write protection switch and reboot.");
-      while (1);
-    }
-  } else {
-    Serial.println("ERROR: no SD card installed. Insert a card and reboot.");
+
+  my_sds.begin(0,1);
+
+  if (! rtc.begin()) {
+    Serial.println("Couldn't find RTC");
     while (1);
+  }
+
+  if (! rtc.isrunning()) {
+    Serial.println("RTC is NOT running!");
+    // following line sets the RTC to the date & time this sketch was compiled
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    // This line sets the RTC with an explicit date & time, for example to set
+    // January 21, 2014 at 3am you would call:
+    // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
   }
 
 }
 
+uint16_t year;
+uint8_t month, day, hour, minute, second;
+
 void loop() {
 
+  error = my_sds.read(&p25,&p10);
+  if (! error) {
+    Serial.println("P2.5: "+String(p25));
+    Serial.println("P10:  "+String(p10));
+  }
 
+  DateTime now = rtc.now();
+  year = now.year();
+  month = now.month();
+  day = now.day();
+  hour = now.hour();
+  minute = now.minute();
+  second = now.second();
 
+  fs.write(year); fs.write(","); fs.write(month); fs.write(","); fs.write(day); fs.write(","); fs.write(hour); fs.write(","); fs.write(minute); fs.write(","); fs.write(second);
+  fs.write(p25);
+  fs.write(",");
+  fs.write(p10);
 
+  syncData(&fs);
 }
