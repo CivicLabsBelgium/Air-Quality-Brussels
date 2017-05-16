@@ -1,15 +1,18 @@
+#include "SDS011.h"
+
+#include "RTClib.h"
+
+
 // SD card access
-#include "sdcard/sdcardutils.h"
-#include "sdcard/Fat16util.h"
-#include "sdcard/SdCard.h"
-#include "sdcard/Fat16.h"
-#include "sdcard/SdInfo.h"
-#include "sdcard/Fat16Config.h"
-#include "sdcard/Fat16mainpage.h"
+#include "sdcardutils.h"
+#include "Fat16util.h"
+#include "SdCard.h"
+#include "Fat16.h"
+#include "SdInfo.h"
+#include "Fat16Config.h"
+#include "Fat16mainpage.h"
 
-#include "sds011/SDS011.h"
 
-#include "ds1307/RTClib.h"
 
 SdCard card;
 Fat16 fs;
