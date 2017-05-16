@@ -1,97 +1,26 @@
-#include "sds011/SDS011.h"
-
-#include "ds1307/RTClib.h"
-
-
-// SD card access
-#include "sdcard/sdcardutils.h"
-#include "sdcard/Fat16util.h"
-#include "sdcard/SdCard.h"
-#include "sdcard/Fat16.h"
-#include "sdcard/SdInfo.h"
-#include "sdcard/Fat16Config.h"
-#include "sdcard/Fat16mainpage.h"
-
-
-
-SdCard card;
-Fat16 fs;
-
-float p10,p25;
-int error;
-
-SDS011 my_sds;
-
-RTC_DS1307 rtc;
-
-char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
-
-
 /*
- * Attempts to initialize an SD card with a FAT16 FS, and create a new file to write data to.
- * Up to 10 files will be created following the naming pattern data0.csv - data9.csv
- */
-bool initCard(SdCard *sd, Fat16 *file)
-{
-  if (!sd->begin(SD_SS_PIN))
-  {
-    Serial.println("Problem initializing SD card.");
-  }
-  else
-  {
-    Serial.println("SD card intialized successfully.");
+  Data logger for PM2.5 and PM10 particles using the SDS011 particle sensor.
+  Connect sensor to primary UART of the board.
+  Designed for Arduino UNO / Sparkfun Redboard platform.
+  Written by Yannick Verbelen (2017). See https://github.com/CivicLabsBelgium/Air-Quality-Brussels
+*/
 
-    if (!Fat16::init(sd))
-    {
-      Serial.println("Unable to initialize the FAT16 file system on the card.");
-    }
-    else
-    {
-      Serial.println("FAT16 file system initialized successfully.");
+#include "SDS011.h"
+#include "RTClib.h"
+#include <SPI.h> // needs to be included again for PlatformIO
+#include <SD.h>
 
-      // create a new file
-      char name[] = "data0.csv";
-      for (uint8_t i = 0; i < 10; i++)
-      {
-        name[7] = i + '0';
-        // O_CREAT - create the file if it does not exist
-        // O_EXCL - fail if the file exists
-        // O_WRITE - open for write only
-        if (file->open(name, O_CREAT | O_EXCL | O_WRITE))
-          break;
-      }
+// pin to which the slave select of the SD card is connected
+#define SD_SS_PIN 10
 
-      if (!file->isOpen())
-      {
-        Serial.println("Failed to open file on the card.");
-      }
-      else
-      {
-        Serial.print("Data will be saved to file "); Serial.print(name); Serial.println(".");
-        return true;
-      }
-    }
-  }
-  return false;
-}
+// set up variables using the SD utility library functions:
+Sd2Card card;      // SD card instance
+SdVolume volume;   // volume instance
+SdFile root;       // file system instance
 
-uint32_t prevSyncTime = millis();
-#define SYNC_INT 60000 // write data to card every minute
-
-/*
- * Flushes data in the SD card's RAM buffer to the flash memory
- */
-void syncData(Fat16 *file)
-{
-  if (millis() > prevSyncTime + SYNC_INT)
-  {
-      prevSyncTime = millis();
-      if (!file->sync())
-      {
-        Serial.println(F("Error logging to SD card."));
-      }
-  }
-}
+float p10, p25;    // particle concentration in ppm
+SDS011 SDS;        // sensor instance
+RTC_DS1307 rtc;    // rtc instance
 
 void setup() {
   Serial.begin(115200);
@@ -101,20 +30,26 @@ void setup() {
 
   pinMode(SD_SS_PIN, OUTPUT);
 
-      if (!initCard(&card, &fs)) {
-        Serial.println("ERROR: card couldn't be initialized. Wrong file system?");
-        while (1);
-      } else {
-        Serial.println("SD card initialized and ready to accept data.");
-      }
+  Serial.print("Initializing SD card... ");
 
-  my_sds.begin(0,1);
+  // see if the card is present and can be initialized:
+  if (!SD.begin(SD_SS_PIN)) {
+    Serial.println("Card failed, or not present");
+    // don't do anything more:
+    return;
+  }
+  Serial.println("card initialized.");
 
+  // initialize the SDS011 particle sensor
+  SDS.begin(0,1);
+
+  // initialize RTC
   if (! rtc.begin()) {
     Serial.println("Couldn't find RTC");
     while (1);
   }
 
+  // configure RTC if necessary
   if (! rtc.isrunning()) {
     Serial.println("RTC is NOT running!");
     // following line sets the RTC to the date & time this sketch was compiled
@@ -124,18 +59,23 @@ void setup() {
     // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
   }
 
+  Serial.println("Initialization complete!");
 }
 
 uint16_t year;
 uint8_t month, day, hour, minute, second;
+uint8_t sensor_err;
 
 void loop() {
 
-  error = my_sds.read(&p25,&p10);
-  if (! error) {
-    Serial.println("P2.5: "+String(p25));
-    Serial.println("P10:  "+String(p10));
-  }
+  // try to read samples from the SDS011 sensor
+  sensor_err = SDS.read(&p25,&p10);
+
+  // if samples could be acquired, log them to the SD card together with a time stamp
+  if (sensor_err) {
+    Serial.println("Unable to acquire samples from sensor, check wiring. Retrying in 5 seconds...");
+    delay(4000);
+  } else {
 
   DateTime now = rtc.now();
   year = now.year();
@@ -145,10 +85,31 @@ void loop() {
   minute = now.minute();
   second = now.second();
 
-  fs.write(year); fs.write(","); fs.write(month); fs.write(","); fs.write(day); fs.write(","); fs.write(hour); fs.write(","); fs.write(minute); fs.write(","); fs.write(second);
-  fs.write(p25);
-  fs.write(",");
-  fs.write(p10);
+  // make a string for assembling the data to log:
+  String dataString = "";
+  // add the time stamp
+  dataString += String(year) + "," + String(month) + "," + String(day) + "," + String(hour) + "," + String(minute) + "," + String(second);
+  // add particle data
+  dataString += "," + String(p25) + "," + String(p10);
 
-  syncData(&fs);
+  // open the file. note that only one file can be open at a time,
+  // so you have to close this one before opening another.
+  File dataFile = SD.open("data", FILE_WRITE);
+
+  // if the file is available, write to it:
+  if (dataFile) {
+    dataFile.println(dataString);
+    dataFile.close();
+    // print to the serial port too:
+    Serial.println(dataString);
+  }
+  // if the file isn't open, pop up an error:
+  else {
+    Serial.println("error opening datalog.txt");
+  }
+
+    }
+
+  delay(1000); // take one measurement per second
+
 }
